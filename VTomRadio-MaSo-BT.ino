@@ -449,7 +449,7 @@ int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len) {
         return len;
     }
 
-    if (audioBufferMutex != NULL && xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (audioBufferMutex != NULL && xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(1)) == pdTRUE) {
         size_t bytesRead = 0;
         void* item = xRingbufferReceiveUpTo(audioRingBuffer, &bytesRead, 0, len);
 
@@ -681,7 +681,7 @@ void initBluetoothStack() {
     if (btMode == "TX") {
         esp_bt_gap_register_callback(bt_gap_search_cb);
         Serial.println("INFO: Spoustim vyhledavani BT sluchatek (Inquiry)...");
-        // Skenujeme 10 sekund (10 * 1.28s)
+        // Skenujeme 12 sekund (10 * 1.28s)
         esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0); 
     }
 }
@@ -739,23 +739,30 @@ void audioProcessingTask(void *pvParameters) {
                 } else {
                     // Lokální buffer je plný - poslat jej do ringbufferu
                     if (xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                        if (xRingbufferSend(audioRingBuffer, localBuffer, localBufferUsed, pdMS_TO_TICKS(2)) != pdTRUE) {
+                        bool sendSuccess = (xRingbufferSend(audioRingBuffer, localBuffer, localBufferUsed, pdMS_TO_TICKS(20)) == pdTRUE);
+
+                        if (!sendSuccess) {
                             audioDiag.ringbufferOverflowCount++;
                             audioDiag.lastOverflowTime = millis();
                             audioDiag.audioDataDroppedBytes += localBufferUsed;
-                            
+            
                             static unsigned long lastOverflowReport = 0;
                             if (millis() - lastOverflowReport > 10000) {
                                 Serial.printf("WARN:RINGBUFFER_OVERFLOW,COUNT=%lu,DROPPED=%lu\n", 
-                                              audioDiag.ringbufferOverflowCount, 
-                                              audioDiag.audioDataDroppedBytes);
+                                audioDiag.ringbufferOverflowCount, 
+                                audioDiag.audioDataDroppedBytes);
                                 lastOverflowReport = millis();
                             }
                         }
-                        xSemaphoreGive(audioBufferMutex);
+
+                        xSemaphoreGive(audioBufferMutex); // Uvolníme mutex před případným pauzováním
+
+                        if (!sendSuccess) {
+                            vTaskDelay(pdMS_TO_TICKS(10)); // Odpočíno se zavřeným mutexem
+                        }
                     }
-                    
-                    // Vynulovat lokální buffer a zkopírovat nová data
+    
+                    // Vynulovat lokální buffer a zkopírovat nová data (TOTO ZŮSTÁVÁ)
                     localBufferUsed = 0;
                     if (bytesToAdd <= sizeof(localBuffer)) {
                         memcpy(localBuffer, pcm16Buf, bytesToAdd);
