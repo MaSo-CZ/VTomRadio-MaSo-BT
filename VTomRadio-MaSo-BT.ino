@@ -496,19 +496,27 @@ int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len) {
 void bt_a2dp_sink_data_cb(const uint8_t *data, uint32_t len) {
     if (data == NULL || len == 0 || isMuted) return;
 
-    if (gain != 1.00f) {
-        // POZNÁMKA: Zde nelze modifikovat const data! Toto je potenciální problém.
-        // Alternativa: kopírovat data do bufferu, upravit, pak odeslat.
-        // Pro nyní: pouze upozornění
-        Serial.println("WARN:GAIN_NOT_APPLIED_ON_RX_DATA");
+    static uint8_t workBuffer[512];  // Max A2DP frame
+    
+    // Kopírovat a aplikovat gain
+    uint8_t *procData = (uint8_t*)data;
+    if (gain != 1.00f && len <= sizeof(workBuffer)) {
+        memcpy(workBuffer, data, len);
+        int16_t *samples = (int16_t*)workBuffer;
+        size_t sampleCount = len / 2;
+        for (size_t i = 0; i < sampleCount; i++) {
+            int32_t sample = (int32_t)(samples[i] * gain);
+            if (sample > 32767) sample = 32767;
+            if (sample < -32768) sample = -32768;
+            samples[i] = (int16_t)sample;
+        }
+        procData = workBuffer;
     }
 
-    // Ochrana přístupu k audioRingBuffer
-    if (audioRingBuffer != NULL) {
-        if (audioBufferMutex != NULL && xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            xRingbufferSend(audioRingBuffer, (void*)data, len, pdMS_TO_TICKS(10));
-            xSemaphoreGive(audioBufferMutex);
-        }
+    if (audioRingBuffer != NULL && audioBufferMutex != NULL && 
+        xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        xRingbufferSend(audioRingBuffer, procData, len, pdMS_TO_TICKS(10));
+        xSemaphoreGive(audioBufferMutex);
     }
 }
 
@@ -1015,7 +1023,7 @@ void setup() {
         "AudioTask",
         8192,
         NULL,
-        5,
+        15,
         &audioTaskHandle,
         1
     );
