@@ -1029,7 +1029,7 @@ void setup() {
     xTaskCreatePinnedToCore(
         audioProcessingTask,
         "AudioTask",
-        8192,
+        16384,
         NULL,
         10,
         &audioTaskHandle,
