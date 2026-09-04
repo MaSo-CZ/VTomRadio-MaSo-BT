@@ -221,7 +221,9 @@ float getChipTemperature() {
         return -999.0f; // Neplatná hodnota
     }
     // Přepočet z RAW hodnota na stupně Celsia pro ESP32
-    return (float)(raw - 32) / 1.8f;
+//    return (float)(raw - 32) / 1.8f;  // Původní
+//    return ((float)raw - 32.0f) / 1.8f;  // Nebo lépe:
+    return (110.0f - (float)raw * 0.5f); // ESP32 specifický
 }
 
 void clearAudioBuffer() {
@@ -292,7 +294,8 @@ bool i2s_init_rx(uint32_t sample_rate) {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
     i2s_std_slot_config_t slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
 #endif
-    chan_cfg.dma_desc_num = 6;
+//    chan_cfg.dma_desc_num = 6;
+    chan_cfg.dma_desc_num = 16;
     chan_cfg.dma_frame_num = 256;
     if (i2s_new_channel(&chan_cfg, NULL, &rx_chan) != ESP_OK) return false;
 
@@ -446,7 +449,7 @@ int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len) {
         return len;
     }
 
-    if (audioBufferMutex != NULL && xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    if (audioBufferMutex != NULL && xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         size_t bytesRead = 0;
         void* item = xRingbufferReceiveUpTo(audioRingBuffer, &bytesRead, 0, len);
 
@@ -483,7 +486,7 @@ int32_t bt_a2dp_data_cb(uint8_t *data, int32_t len) {
         int16_t *samples = (int16_t *)data;
         size_t sampleCount = len / 2;
         for (size_t i = 0; i < sampleCount; i++) {
-            int32_t sample = (int32_t)(samples[i] * gain);
+            int32_t sample = (int32_t)(samples[i]) * (int32_t)(gain * 100) / 100;
             if (sample > 32767) sample = 32767;
             if (sample < -32768) sample = -32768;
             samples[i] = (int16_t)sample;
@@ -723,6 +726,11 @@ void audioProcessingTask(void *pvParameters) {
 
             if (total_samples > 0 && audioRingBuffer != NULL) {
                 size_t bytesToAdd = total_samples * sizeof(int16_t);
+
+                if (bytesToAdd > sizeof(localBuffer)) {
+                    Serial.printf("WARN:AUDIO_SAMPLE_TOO_LARGE,SAMPLES=%zu\n", total_samples);
+                    // Nebo rozdělit na více iterací
+                }
                 
                 // Kopírovat do lokálního bufferu
                 if (localBufferUsed + bytesToAdd <= sizeof(localBuffer)) {
@@ -730,7 +738,7 @@ void audioProcessingTask(void *pvParameters) {
                     localBufferUsed += bytesToAdd;
                 } else {
                     // Lokální buffer je plný - poslat jej do ringbufferu
-                    if (xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    if (xSemaphoreTake(audioBufferMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                         if (xRingbufferSend(audioRingBuffer, localBuffer, localBufferUsed, pdMS_TO_TICKS(2)) != pdTRUE) {
                             audioDiag.ringbufferOverflowCount++;
                             audioDiag.lastOverflowTime = millis();
@@ -1023,7 +1031,7 @@ void setup() {
         "AudioTask",
         8192,
         NULL,
-        15,
+        10,
         &audioTaskHandle,
         1
     );
